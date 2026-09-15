@@ -1,7 +1,12 @@
---TODO:FILE_MAY_BE_OUTDATED(v0.8-beta/unstable-beta)
-
 --!strict
 --!optimize 2
+
+--[[
+RETURN MAH FACE BAK!!! said robloxians
+Ok! said the script itself
+
+A updated fork of RBX-ReturnMyFace by J4KEWasNotHere
+]]
 
 local module = {HeadStorage = {}}
 
@@ -32,7 +37,7 @@ type HeadStorageEntry = {
 }
 
 -- Objects
-local Storage = script:FindFirstChild("storage") or Instance.new("Folder")
+local Storage = script:FindFirstChild("storage", true) or Instance.new("Folder")
 Storage.Name = "storage"
 Storage.Parent = script
 
@@ -40,6 +45,7 @@ local HeadTemplate = script:WaitForChild("Head")
 
 -- Modules
 local Bin = require("@self/bin")
+local Shaper = require("@self/shaper")
 
 -- Constants
 local FALLBACK_DATA: FaceAssetId = {
@@ -51,7 +57,6 @@ local HEAD_ACCESSORY_TYPES = {
 	Enum.AccessoryType.Hat,
 	Enum.AccessoryType.Hair,
 	Enum.AccessoryType.Face,
-	Enum.AccessoryType.Neck,
 	Enum.AccessoryType.Eyebrow,
 	Enum.AccessoryType.Eyelash,
 }
@@ -73,17 +78,18 @@ local function tryGetSource(dynamicHeadId: number): FaceAssetId?
 	return src
 end
 
-local function searchForDynamicHeadId(userId: number): (number, { [string]: any })
+local function searchForDynamicHeadId(userId: number): (number, { [string]: any }, string?)
 	local appearanceData = PlayerService:GetCharacterAppearanceInfoAsync(userId)
-	if not appearanceData then return 0, {} end
+	if not appearanceData then return 0, {}, nil end
 	
 	for _, assetData in appearanceData.assets do
 		if assetData.assetType.id == 79 or assetData.assetType.name == "DynamicHead" then
-			return assetData.id, assetData
+			local headShape = assetData.meta and assetData.meta.headShape
+			return assetData.id, assetData, headShape
 		end
 	end
 	
-	return 0, {}
+	return 0, {}, nil
 end
 
 local function getClassicFaceIdFromDynamicHeadId(dynamicHeadId: number): (number, FaceAssetId)
@@ -100,6 +106,7 @@ end
 local function getHeadScale(character: Model): number
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	if not humanoid then return 1 end
+	if humanoid.RigType == Enum.HumanoidRigType.R6 then return 1 end -- scaling doesnt work with r6.
 	
 	local headscale = humanoid:FindFirstChild("HeadScale")
 	if headscale and headscale:IsA("NumberValue") then return headscale.Value end
@@ -107,26 +114,46 @@ local function getHeadScale(character: Model): number
 	return humanoid:GetAppliedDescription().HeadScale
 end
 
-local function refreshAccessories(character: Model, scale: number?): ()
+local function getHeadShape(character: Model): string
+	local head = character:FindFirstChild("Head")
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local humanoidDescription = humanoid and humanoid:FindFirstChildOfClass("HumanoidDescription")
+	local shape = nil
+	
+	if not shape and humanoidDescription then
+		for _, itemDescription in humanoidDescription:GetChildren() do
+			if not itemDescription:IsA("BodyPartDescription") then continue end
+			if itemDescription.BodyPart ~= Enum.BodyPart.Head then continue end
+			return itemDescription.HeadShape
+		end
+	end
+	
+	return shape or "Default"
+end
+
+local function refreshAccessories(character: Model, scale: number?, accessoryOffset: Vector3?): ()
+	local offset = accessoryOffset or Vector3.zero
 	local accessories = {}
 	for _, accessory in character:GetChildren() do
 		if not accessory:IsA("Accessory") then continue end
 		table.insert(accessories, accessory)
 		accessory.Parent = nil
-		
-		if scale and table.find(HEAD_ACCESSORY_TYPES, accessory.AccessoryType) then
+
+		if table.find(HEAD_ACCESSORY_TYPES, accessory.AccessoryType) then
 			local handle = accessory:FindFirstChild("Handle")
 			if not handle or not handle:IsA("BasePart") then continue end
-			
-			local originalSize = handle:FindFirstChild("OriginalSize")
-			if not originalSize then
-				originalSize = Instance.new("Vector3Value")
-				originalSize.Name = "OriginalSize"
-				originalSize.Value = handle.Size
-				originalSize.Parent = handle
+
+			if scale then
+				local originalSize = handle:FindFirstChild("OriginalSize")
+				if not originalSize then
+					originalSize = Instance.new("Vector3Value")
+					originalSize.Name = "OriginalSize"
+					originalSize.Value = handle.Size
+					originalSize.Parent = handle
+				end
+				handle.Size = (originalSize :: Vector3Value).Value * scale
 			end
-			handle.Size = (originalSize :: Vector3Value).Value * scale
-			
+
 			for _, attachment in handle:GetChildren() do
 				if not attachment:IsA("Attachment") then continue end
 				local originalPos = attachment:FindFirstChild("OriginalPosition")
@@ -136,13 +163,13 @@ local function refreshAccessories(character: Model, scale: number?): ()
 					originalPos.Value = attachment.Position
 					originalPos.Parent = attachment
 				end
-				attachment.Position = (originalPos :: Vector3Value).Value * scale
+				attachment.Position = (originalPos :: Vector3Value).Value * (scale or 1) + offset
 			end
 		end
 	end
-	
+
 	RunService.Heartbeat:Wait()
-	
+
 	for _, accessory in accessories do
 		accessory.Parent = character
 	end
@@ -155,14 +182,46 @@ local function setFaceTexture(head: Instance, texture: string): ()
 	end
 end
 
-local function setHeadMesh(head: Instance, dynamic: boolean, scale: number): ()
+local function setHeadMesh(head: Instance, dynamic: boolean, scale: number?, shape: string?, isR6: boolean?): Vector3
 	local mesh = head:FindFirstChildOfClass("SpecialMesh")
-	if not mesh then return end
-	mesh.MeshType = dynamic and Enum.MeshType.FileMesh or Enum.MeshType.Head
-	mesh.Scale = dynamic and V3_ONE or HEAD_SCALE * math.max(0, scale)
+	if not mesh then return Vector3.zero end
+
+	if dynamic then
+		mesh.MeshType = Enum.MeshType.FileMesh
+		mesh.Scale = V3_ONE
+		mesh.Offset = Vector3.zero
+
+		local textureId = mesh:GetAttribute("texture_id")
+		if textureId then
+			mesh.TextureId = textureId
+			mesh:SetAttribute("texture_id", nil)
+		end
+
+		local headId = mesh:GetAttribute("head_id")
+		if headId then
+			mesh.MeshId = headId
+			mesh:SetAttribute("head_id", nil)
+		end
+
+		return Vector3.zero
+	else
+		if not mesh:GetAttribute("head_id") then
+			mesh:SetAttribute("head_id", mesh.MeshId)
+		end
+		mesh.MeshType = Enum.MeshType.Head
+		mesh.Scale = HEAD_SCALE * math.max(0, scale or 1)
+	end
+
+	if not dynamic then
+		local accessoryOffset = Shaper.set(mesh, shape or "Default")
+		mesh.Scale = mesh.Scale * math.max(0, scale or 1)
+		return accessoryOffset
+	end
+
+	return Vector3.zero
 end
 
-local function swapHead(character: Model, wantDynamic: boolean, texture: string?, scale: number): BasePart?
+local function swapHead(character: Model, wantDynamic: boolean, texture: string?, scale: number, shape: string?): BasePart?
 	local currHead = character:FindFirstChild("Head") :: BasePart?
 	local part0 = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
 	if not part0 or not currHead then return nil end
@@ -171,7 +230,8 @@ local function swapHead(character: Model, wantDynamic: boolean, texture: string?
 	
 	if isR6 then
 		if texture then setFaceTexture(currHead, texture) end
-		setHeadMesh(currHead, wantDynamic, scale)
+		local accessoryOffset = setHeadMesh(currHead, wantDynamic, scale, shape, true)
+		refreshAccessories(character, scale, accessoryOffset)
 		return currHead
 	end
 	
@@ -185,8 +245,8 @@ local function swapHead(character: Model, wantDynamic: boolean, texture: string?
 		incoming.Parent = character
 
 		if texture then setFaceTexture(incoming, texture) end
-		setHeadMesh(incoming, wantDynamic, scale)
-		refreshAccessories(character, scale)
+		local accessoryOffset = setHeadMesh(incoming, wantDynamic, scale, shape, isR6)
+		refreshAccessories(character, scale, accessoryOffset)
 		return incoming
 	end
 	
@@ -196,7 +256,7 @@ local function swapHead(character: Model, wantDynamic: boolean, texture: string?
 	classicHead:SetAttribute("IsDynamic", false)
 	
 	if scale ~= 1 then
-		classicHead.Size = Vector3.new(2, 1, 1) * scale
+		--classicHead.Size = Vector3.new(2, 1, 1) * scale
 		for _, obj in classicHead:GetDescendants() do
 			if obj:IsA("Vector3Value") then
 				obj.Value *= scale
@@ -244,8 +304,8 @@ local function swapHead(character: Model, wantDynamic: boolean, texture: string?
 	if humanoid then wait() humanoid.RequiresNeck = requiredNeck end
 	
 	if texture then setFaceTexture(activeHead, texture) end
-	setHeadMesh(activeHead, wantDynamic, scale)
-	refreshAccessories(character, scale)
+	local accessoryOffset = setHeadMesh(activeHead, wantDynamic, scale, shape, isR6) -- last was false, nil (<-)
+	refreshAccessories(character, scale, accessoryOffset)
 	
 	return activeHead
 end
@@ -275,11 +335,11 @@ function module.getClassicFaceIdFromHumanoidDescription(humanoidDescription: Hum
 	return classicFaceId, src
 end
 
-function module.getClassicFaceIdFromUserId(userId: number): (number?, FaceAssetId)
-	local dynamicHeadId = searchForDynamicHeadId(userId)
-	if dynamicHeadId == 0 then return nil, FALLBACK_DATA end
+function module.getClassicFaceIdFromUserId(userId: number): (number?, FaceAssetId, string?)
+	local dynamicHeadId, _, shape = searchForDynamicHeadId(userId)
+	if dynamicHeadId == 0 then return nil, FALLBACK_DATA, nil end
 	local classicFaceId, src = getClassicFaceIdFromDynamicHeadId(dynamicHeadId)
-	return classicFaceId, src
+	return classicFaceId, src, shape
 end
 
 function module.getClassicFaceIdFromCharacter(character: Model): (number?, FaceAssetId)
@@ -294,7 +354,8 @@ function module.getClassicFaceIdFromCharacter(character: Model): (number?, FaceA
 	
 	local player: Player? = PlayerService:GetPlayerFromCharacter(character)
 	if player then
-		return module.getClassicFaceIdFromUserId(player.UserId)
+		local id, data = module.getClassicFaceIdFromUserId(player.UserId)
+		return id, data
 	end
 	
 	return nil, FALLBACK_DATA
@@ -310,6 +371,7 @@ function module.returnClassicFace(character: Model)
 	local source: FaceAssetId
 	
 	local player: Player? = PlayerService:GetPlayerFromCharacter(character)
+	local headShape = getHeadShape(character)
 	
 	if player and PREFER_USER then
 		local dynamicHeadId = searchForDynamicHeadId(player.UserId)
@@ -339,13 +401,18 @@ function module.returnClassicFace(character: Model)
 	end
 	
 	local texture = source.prefix .. source.id
-	swapHead(character, false, texture, scale)
+	swapHead(character, false, texture, scale, headShape)
 end
 
 -- Returns a character's head to its dynamic state - must already exist in the character.
 function module.returnDynamicHead(character: Model)
 	local storage: HeadStorageEntry? = module.HeadStorage[character]
-	if not storage then return end
+	if not storage then
+		local head = character:FindFirstChild("Head")
+		if not head then return end
+		setHeadMesh(head, true, nil, nil)
+		return
+	end
 	swapHead(character, true, nil, getHeadScale(character))
 end
 
