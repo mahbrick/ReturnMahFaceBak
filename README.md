@@ -1,9 +1,9 @@
 
-Head to [Releases](https://github.com/J4KEWasNotHere/RBX-ReturnMyFace/releases) to get the Module - the latest one would be at the top.
+Head to [Releases](https://github.com/mahbrick/ReturnMahFaceBak/releases) to get the Module - the latest one would be at the top.
 
 ---
 
-# 🏗️ Quick Start
+# Quick Start
 
 Create a Script inside ServerScriptService, with the Module inside of it.
 
